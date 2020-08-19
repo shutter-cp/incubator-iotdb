@@ -21,6 +21,7 @@ package org.apache.iotdb.tsfile.write.writer;
 import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
@@ -221,18 +222,60 @@ public class TsFileIOWriter {
    * @throws IOException if I/O error occurs
    */
   public void endFile() throws IOException {
+    endFile(Collections.emptyList());
+  }
+
+  /**
+   * remove the deleted chunk metadata in deleted series, write {@linkplain TsFileMetadata
+   * TSFileMetaData} to output stream and close it.
+   *
+   * @param deletedSeries deleted series in mod file
+   * @throws IOException if I/O error occurs
+   */
+  public void endFile(List<Path> deletedSeries) throws IOException {
 
     long metaOffset = out.getPosition();
 
     // serialize the SEPARATOR of MetaData
     ReadWriteIOUtils.write(MetaMarker.SEPARATOR, out.wrapAsStream());
 
+    // path -> new correct data type
+    Map<Path, TSDataType> pathDataTypeMap = new HashMap<>();
+    for (Path path : deletedSeries) {
+      boolean putInMap = false;
+      for (int i = chunkGroupMetadataList.size() - 1; i >= 0; i--) {
+        if (!chunkGroupMetadataList.get(i).getDevice().equals(path.getDevice())) {
+          continue;
+        }
+        List<ChunkMetadata> chunkMetadataList = chunkGroupMetadataList
+            .get(i).getChunkMetadataList();
+        for (int k = chunkMetadataList.size() - 1; k >= 0; k--) {
+          ChunkMetadata chunkMetadata = chunkMetadataList.get(k);
+          if (chunkMetadata.getMeasurementUid().equals(path.getMeasurement())) {
+            pathDataTypeMap.put(path, chunkMetadata.getDataType());
+            putInMap = true;
+            break;
+          }
+        }
+        if (putInMap) {
+          break;
+        }
+      }
+    }
+
     // group ChunkMetadata by series
     Map<Path, List<ChunkMetadata>> chunkMetadataListMap = new TreeMap<>();
     for (ChunkGroupMetadata chunkGroupMetadata : chunkGroupMetadataList) {
-      for (ChunkMetadata chunkMetadata : chunkGroupMetadata.getChunkMetadataList()) {
+      Iterator<ChunkMetadata> ite = chunkGroupMetadata.getChunkMetadataList().iterator();
+      while (ite.hasNext()) {
+        ChunkMetadata chunkMetadata = ite.next();
         Path series = new Path(chunkGroupMetadata.getDevice(), chunkMetadata.getMeasurementUid());
-        chunkMetadataListMap.computeIfAbsent(series, k -> new ArrayList<>()).add(chunkMetadata);
+        if (deletedSeries.contains(series) && !chunkMetadata.getDataType()
+            .equals(pathDataTypeMap.get(series))) {
+          ite.remove();
+        } else {
+          chunkMetadataListMap.computeIfAbsent(series, k -> new ArrayList<>()).add(chunkMetadata);
+        }
       }
     }
 

@@ -48,8 +48,8 @@ import org.apache.iotdb.db.engine.storagegroup.StorageGroupProcessor.UpdateEndTi
 import org.apache.iotdb.db.engine.version.VersionController;
 import org.apache.iotdb.db.exception.TsFileProcessorException;
 import org.apache.iotdb.db.exception.WriteProcessException;
-import org.apache.iotdb.db.qp.physical.crud.InsertTabletPlan;
 import org.apache.iotdb.db.qp.physical.crud.InsertPlan;
+import org.apache.iotdb.db.qp.physical.crud.InsertTabletPlan;
 import org.apache.iotdb.db.query.context.QueryContext;
 import org.apache.iotdb.db.rescon.MemTablePool;
 import org.apache.iotdb.db.utils.QueryUtils;
@@ -61,6 +61,7 @@ import org.apache.iotdb.service.rpc.thrift.TSStatus;
 import org.apache.iotdb.tsfile.file.metadata.ChunkMetadata;
 import org.apache.iotdb.tsfile.file.metadata.enums.TSDataType;
 import org.apache.iotdb.tsfile.file.metadata.enums.TSEncoding;
+import org.apache.iotdb.tsfile.read.common.Path;
 import org.apache.iotdb.tsfile.utils.Pair;
 import org.apache.iotdb.tsfile.write.writer.RestorableTsFileIOWriter;
 import org.slf4j.Logger;
@@ -245,7 +246,8 @@ public class TsFileProcessor {
             .delete(deletion.getDevice(), deletion.getMeasurement(), deletion.getTimestamp());
       }
 
-      // clear ChunkMetaData of the deleted timeseries
+      // clear ChunkMetaData of the deleted timeseries. If deletion.getTimestamp() == Long.MAX_VALUE,
+      // it means that the whole timeseries is deleted
       if (deletion.getTimestamp() == Long.MAX_VALUE) {
         writer.deleteMeasurementFromChunkGroupMetadataList(deletion.getDevice(),
             deletion.getMeasurement(), null);
@@ -652,7 +654,16 @@ public class TsFileProcessor {
   private void endFile() throws IOException, TsFileProcessorException {
     long closeStartTime = System.currentTimeMillis();
     tsFileResource.serialize();
-    writer.endFile();
+
+    // clear ChunkMetaData of the deleted timeseries
+    List<Path> deletedSeries = new ArrayList<>();
+    for (Modification modification : tsFileResource.getModFile().getModifications()) {
+      if (((Deletion) modification).getTimestamp() == Long.MAX_VALUE) {
+        deletedSeries.add(new Path(modification.getDevice(), modification.getMeasurement()));
+      }
+    }
+
+    writer.endFile(deletedSeries);
     tsFileResource.cleanCloseFlag();
 
     // remove this processor from Closing list in StorageGroupProcessor,
